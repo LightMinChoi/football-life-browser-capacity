@@ -1,0 +1,11 @@
+output/
+node_modules/
+test-results/
+playwright-report/
+*.log
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.pem
+*.key

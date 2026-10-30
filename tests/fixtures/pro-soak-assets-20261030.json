@@ -1,0 +1,101 @@
+{
+  "origin": "https://football-life.petermin7.workers.dev",
+  "assets": [
+    {
+      "path": "/",
+      "sha256": "0028d834000d74819365b06a2d5e77470fae855caa9ab1a81662c11f0237e477"
+    },
+    {
+      "path": "/style.css",
+      "sha256": "ddeebc525f33c53cf76ca2c2c70d4b7ed6209a1f3b7f63c9049d3deec1a35fb4"
+    },
+    {
+      "path": "/app.js",
+      "sha256": "e820e1969ce3bd04e196283423bef359d18627469735043e8e0fd37f0ed9951d"
+    },
+    {
+      "path": "/military.js",
+      "sha256": "55e42ed7bcf9274bd490b4d8f001ea80c1f5a394ab9405af46fff8780d4bfb7e"
+    },
+    {
+      "path": "/results.js",
+      "sha256": "3495af625ca8b35839332ec96762855ce6971e05463f0016ec85a1a256b813a6"
+    },
+    {
+      "path": "/data.js",
+      "sha256": "fa3cd0377027430ad8a21ec309ae33c9347fcf4638425b5043ca0ace17bb01ca"
+    },
+    {
+      "path": "/story-art.js",
+      "sha256": "442db55ef9985ee814203c623f5dc97458d78213870858aeb0d21c921d3b708d"
+    },
+    {
+      "path": "/kits.js",
+      "sha256": "09fa0153cbecece65a2670e685a7c729e67d41a0d76d31b6ab3aed464956dd1c"
+    },
+    {
+      "path": "/engine.js",
+      "sha256": "0ae5d0953c52fe338f196fd52e2de22f343a714df6c6cf5785c598e4bc0cd7f4"
+    },
+    {
+      "path": "/competitions.js",
+      "sha256": "0f34351828d3c5c6913cf7571b7386b4bfb80f8c8e63139da3609386257b5e9c"
+    },
+    {
+      "path": "/honours.js",
+      "sha256": "f88c3e6efc249b79771ba603cc0e0756278bbf3b54efa9cc1431429202f2285b"
+    },
+    {
+      "path": "/endings.js",
+      "sha256": "3837167724650364874f09ebf80a517bc8a55efa8d7e2df02129570565827d87"
+    },
+    {
+      "path": "/youth.js",
+      "sha256": "4ba7020b920a1d668235508dbaac7e00d9dba81f801ba0d319c5de1fc220e701"
+    },
+    {
+      "path": "/international.js",
+      "sha256": "ab594ce8cb71933b9e25ca1e15ab1ac26ee48795d7d24b54b78b07dbc5d6f34c"
+    },
+    {
+      "path": "/player-art.js",
+      "sha256": "e846d9ab83962f1968dbdbcc7c989e24aa6619d0b63136bfd4e04673e533f8d7"
+    },
+    {
+      "path": "/scenery.js",
+      "sha256": "f403dd5116477f9a98400c62942bcf6ce649796f033a96b88a3711d803068d6e"
+    },
+    {
+      "path": "/story.js",
+      "sha256": "0c33849f69cece3ef42864960dc20474bda4495bacd8ede75f54bf0a637375b6"
+    },
+    {
+      "path": "/research/club-expansion-overseas.json",
+      "sha256": "769c717b9a7f680edae2545fe1607f8cd9738a7df31dbb37d278c771255eee3c"
+    },
+    {
+      "path": "/research/club-expansion-domestic.json",
+      "sha256": "4fac74dd6906ba10d2215962d332fe9268a1d71771c26cd2f7ad1e9a6bdd3baf"
+    },
+    {
+      "path": "/research/korea-men-probabilities.v0.1.json",
+      "sha256": "fb62d493678b9facbbc41adc219820ebcc084601b7e6fdabdb36473f86aa032c"
+    },
+    {
+      "path": "/appearances.js",
+      "sha256": "818d8eb32aa16be3b5c82bac39fcff6180590b3a896f8e5d38f5738880c3ecc8"
+    },
+    {
+      "path": "/season-summary.js",
+      "sha256": "e8a6b1b3b8bdffc35aa89da1a7891abea40ca06ac54edd0e9a509f762c49a6f1"
+    },
+    {
+      "path": "/research/club-expansion-world.json",
+      "sha256": "d9151828bca2a2645ad3bece3ec4e41ac40474697a3faae3d834a769a68551e6"
+    },
+    {
+      "path": "/research/club-catalog-history.json",
+      "sha256": "7937b210989324683ed2cd6d5b1d0e0b82ae58e246bcee256e2769964557b4c2"
+    }
+  ]
+}

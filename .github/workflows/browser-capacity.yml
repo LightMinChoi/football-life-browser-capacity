@@ -1,0 +1,228 @@
+name: Bounded independent browser capacity
+# Manual runs only. Default pilot-only; cohort-200 must pass its own fresh pilot. No retries or automatic escalation.
+# At most 20 concurrent VMs, 22 jobs * 25 minutes = 550 runner-minute timeout ceiling.
+# Browser guards: per client allocation 512 GET / 64 MiB encoded / 128 MiB decoded; per VM min(existing caps, allocation * count).
+# At most 210 profile executions per stage: 107520 GET / 10.5 GB encoded / 26.25 GiB decoded guard thresholds (per-VM encoded caps applied).
+# In-flight response bodies may complete after a guard fires; all clients stop on shared budget failure.
+# Package installation traffic and artifacts are outside browser network counters.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'First verify pilot-only. cohort-200 repeats the pilot before starting 200 browsers.'
+        type: choice
+        required: true
+        default: pilot-only
+        options: [pilot-only, cohort-200]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: football-life-pro-soak
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      startEpochMs: ${{ steps.barrier.outputs.startEpochMs }}
+      matrix: ${{ steps.layout.outputs.matrix }}
+      density: ${{ steps.layout.outputs.density }}
+      total: ${{ steps.layout.outputs.total }}
+    steps:
+      - name: Validate requested stage before any setup or target requests
+        env:
+          REQUESTED_STAGE: ${{ inputs.stage }}
+        run: |
+          python3 - <<'PY'
+          import os
+          assert os.environ["REQUESTED_STAGE"] in ("pilot-only", "cohort-200"), "Unsupported requested stage"
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Verify standard public runner hardware before browser work
+        env:
+          HARDWARE_OUTPUT: output/pilot/runner-hardware.json
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import platform
+          record = {
+              "platform": platform.system(),
+              "cpuCount": os.cpu_count(),
+              "totalMemoryBytes": os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"),
+              "runnerName": os.environ.get("RUNNER_NAME"),
+              "runnerImage": os.environ.get("ImageOS"),
+              "bootId": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+              "minimumCpuCount": 4,
+              "minimumMemoryBytes": 14 * 1024**3,
+          }
+          output = pathlib.Path(os.environ["HARDWARE_OUTPUT"])
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(record, indent=2) + "\n")
+          print(json.dumps(record))
+          assert record["platform"] == "Linux", "Expected standard Linux runner"
+          assert record["cpuCount"] >= 4, "Expected at least four vCPUs; do not run ten browsers on the prior two-vCPU class"
+          assert record["totalMemoryBytes"] >= record["minimumMemoryBytes"], "Expected approximately 16 GB RAM (minimum 14 GiB visible)"
+          PY
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - name: Select bounded cohort
+        id: layout
+        run: |
+          node --input-type=module - <<'JS'
+          import fs from 'node:fs';
+          const {cohort:total,density}=JSON.parse(fs.readFileSync('tests/browser-capacity-plan.json','utf8'));
+          if(total!==200||density!==10)throw Error('This public package supports only the reviewed 200/10 plan');
+          const include=Array.from({length:Math.ceil(total/density)},(_,shard)=>({shard,count:Math.min(density,total-shard*density)}));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,`total=${total}\ndensity=${density}\nmatrix=${JSON.stringify({include})}\n`);
+          JS
+      - name: Check browser harness before live requests
+        run: |
+          node --check tests/playtest-browser.mjs
+          node tests/playtest-browser.mjs --self-check
+          node --check tests/playtest-ui.mjs
+          node tests/playtest-aggregate.mjs --self-check
+          node tests/load-monitor.mjs --self-check
+      - name: Install isolated browser tooling
+        shell: bash
+        run: |
+          mkdir -p output/pilot/browser-shard-0
+          npm install --prefix "$RUNNER_TEMP/play-tools" --no-audit --no-fund --package-lock=false playwright@1.62.1
+          node "$RUNNER_TEMP/play-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/play-tools/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+      - name: Check modal races locally before live requests
+        run: node tests/playtest-ui-regression.mjs
+      - name: Natural ten-minute density pilot
+        env:
+          DENSITY: ${{ steps.layout.outputs.density }}
+        run: |
+          epoch=$(node -e 'console.log(Date.now()+240000)')
+          node tests/load-monitor.mjs output/pilot/browser-shard-0/host-metrics.jsonl node tests/playtest-browser.mjs output/pilot/browser-shard-0 "$DENSITY" 0 "$epoch" 610 soak "$DENSITY" "$DENSITY"
+      - name: Validate complete pilot and runner headroom
+        run: node tests/playtest-aggregate.mjs --soak output/pilot output/pilot/aggregate.json ${{ steps.layout.outputs.density }} ${{ steps.layout.outputs.density }}
+      - name: Schedule common active window
+        if: inputs.stage == 'cohort-200'
+        id: barrier
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT,`startEpochMs=${Date.now()+240000}\n`)'
+      - name: Preserve pilot reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: browser-pilot
+          path: |
+            output/pilot/runner-hardware.json
+            output/pilot/**/report.json
+            output/pilot/**/host-metrics.jsonl
+            output/pilot/**/*.png
+            output/pilot/aggregate.json
+            output/pilot/**/*.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  play:
+    if: inputs.stage == 'cohort-200'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Verify standard public runner hardware before browser work
+        env:
+          HARDWARE_OUTPUT: output/shard-${{ matrix.shard }}/runner-hardware.json
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import platform
+          record = {
+              "platform": platform.system(),
+              "cpuCount": os.cpu_count(),
+              "totalMemoryBytes": os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"),
+              "runnerName": os.environ.get("RUNNER_NAME"),
+              "runnerImage": os.environ.get("ImageOS"),
+              "bootId": pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+              "minimumCpuCount": 4,
+              "minimumMemoryBytes": 14 * 1024**3,
+          }
+          output = pathlib.Path(os.environ["HARDWARE_OUTPUT"])
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(record, indent=2) + "\n")
+          print(json.dumps(record))
+          assert record["platform"] == "Linux", "Expected standard Linux runner"
+          assert record["cpuCount"] >= 4, "Expected at least four vCPUs; do not run ten browsers on the prior two-vCPU class"
+          assert record["totalMemoryBytes"] >= record["minimumMemoryBytes"], "Expected approximately 16 GB RAM (minimum 14 GiB visible)"
+          PY
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - name: Install isolated browser tooling
+        shell: bash
+        run: |
+          mkdir -p output/shard-${{ matrix.shard }}
+          npm install --prefix "$RUNNER_TEMP/play-tools" --no-audit --no-fund --package-lock=false playwright@1.62.1
+          node "$RUNNER_TEMP/play-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/play-tools/node_modules/playwright/index.mjs" >> "$GITHUB_ENV"
+      - name: Play independent browsers
+        run: node tests/load-monitor.mjs output/shard-${{ matrix.shard }}/host-metrics.jsonl node tests/playtest-browser.mjs output/shard-${{ matrix.shard }} ${{ matrix.count }} ${{ matrix.shard }} ${{ needs.preflight.outputs.startEpochMs }} 610 soak ${{ needs.preflight.outputs.total }} ${{ needs.preflight.outputs.density }}
+      - name: Preserve shard reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: browser-shard-${{ matrix.shard }}
+          path: |
+            output/shard-${{ matrix.shard }}/runner-hardware.json
+            output/shard-${{ matrix.shard }}/**/report.json
+            output/shard-${{ matrix.shard }}/host-metrics.jsonl
+            output/shard-${{ matrix.shard }}/**/*.png
+            output/shard-${{ matrix.shard }}/**/*.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  aggregate:
+    if: always() && inputs.stage == 'cohort-200'
+    needs: [preflight, play]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24.20.0'
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: browser-shard-*
+          path: output/downloaded
+      - name: Validate all independent browser results
+        if: always()
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          PLAY_RESULT: ${{ needs.play.result }}
+        run: node tests/playtest-aggregate.mjs --soak output/downloaded output/aggregate.json ${{ needs.preflight.outputs.total }} ${{ needs.preflight.outputs.density }}
+      - name: Preserve aggregate
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: browser-aggregate
+          path: output/aggregate.json
+          retention-days: 7
+          if-no-files-found: warn
