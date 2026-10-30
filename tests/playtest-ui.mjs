@@ -17,9 +17,11 @@ export function createPlaytestUi({page,scenario,check=()=>{},actions=[],onChoice
    if(!modal&&((await openDialogs(page)).length))await drain();
    if(retirementSensitive&&readState){const state=await readState();if(state.mode==='retired'||label==='pause'&&state.paused){row.skippedAtMs=Date.now();row.skippedReason=state.mode==='retired'?'retired':'already-paused';check();return;}}
    const remaining=deadline-Date.now();assert(remaining>0,`UI action exceeded 15 seconds: ${label}`);
-   try{await page.locator(selector).first().click({timeout:modal?remaining:Math.min(750,remaining)});break;}
+   if(modal)break;
+   // Probe without dispatching input: a timed-out real click may already have taken effect.
+   try{await page.locator(selector).first().click({trial:true,timeout:Math.min(750,remaining)});break;}
    catch(error){
-    if(modal||error.name!=='TimeoutError')throw error;
+    if(error.name!=='TimeoutError')throw error;
     // Recheck known modal interception or observed retirement; preserve unrelated click failures.
     if(!(await openDialogs(page)).length){
      if(retirementSensitive&&readState&&(await readState()).mode==='retired')continue;
@@ -28,6 +30,9 @@ export function createPlaytestUi({page,scenario,check=()=>{},actions=[],onChoice
     await drain();
    }
   }
+  const remaining=deadline-Date.now();assert(remaining>0,`UI action exceeded 15 seconds: ${label}`);
+  // Dispatch once, keeping handler/navigation completion inside the original action budget.
+  await page.locator(selector).first().click({timeout:remaining});
   row.endMs=Date.now();await new Promise(resolve=>setTimeout(resolve,100));check();return true;
  }
  async function drain(){for(let n=0;n<40;n++){

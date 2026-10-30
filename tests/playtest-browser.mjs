@@ -5,14 +5,29 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-function createPreparationGate(){
+function createPreparationGate(label='browser preparation'){
  let turn=Promise.resolve(),failure;
  return async()=>{
   let release;const previous=turn;turn=new Promise(resolve=>{release=resolve;});
   await previous;
-  if(failure){release();throw new Error('Earlier browser preparation failed',{cause:failure});}
+  if(failure){release();throw new Error(`Earlier ${label} failed`,{cause:failure});}
   return error=>{failure ||= error;release();};
  };
+}
+
+function createRestorationGate(count){
+ let ready=0,failure,resolve,reject;
+ const barrier=new Promise((done,fail)=>{resolve=done;reject=fail;});
+ barrier.catch(()=>{});
+ const enterSerial=createPreparationGate('browser restoration');
+ const check=()=>{if(failure)throw new Error('Earlier browser lifecycle failed',{cause:failure});};
+ return {check,fail(error){failure ||= error;reject(failure);},async enter(){
+  if(++ready===count)resolve();
+  await barrier;check();
+  const release=await enterSerial();
+  try{check();}catch(error){release(error);throw error;}
+  return release;
+ }};
 }
 
 async function preparationSelfCheck(){
@@ -36,7 +51,29 @@ async function preparationSelfCheck(){
  await assert.rejects(failedGate(),error=>error.cause===failure,'Failure releases queued slots without launching more clients');
  console.log('browser preparation self-check passed: serial readiness, concurrent common-barrier activity, failure propagation and queue release');
 }
-if(process.argv[2]==='--self-check'){await preparationSelfCheck();process.exit(0);}
+async function restorationSelfCheck(){
+ const flush=()=>new Promise(resolve=>setImmediate(resolve));
+ const bounded=promise=>{
+  let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Restoration gate hung')),1000);})]).finally(()=>clearTimeout(timer));
+ };
+ const gate=createRestorationGate(3),events=[];
+ const enter=async id=>{events.push(`paused-saved-${id}`);const release=await gate.enter();events.push(`restore-${id}`);return release;};
+ const first=enter(0),second=enter(1);await flush();
+ assert.deepEqual(events,['paused-saved-0','paused-saved-1'],'No restore while another client remains active');
+ const third=enter(2),releaseFirst=await bounded(first);await flush();
+ assert.deepEqual(events,['paused-saved-0','paused-saved-1','paused-saved-2','restore-0']);
+ releaseFirst();const releaseSecond=await bounded(second);await flush();assert.equal(events.at(-1),'restore-1');assert(!events.includes('restore-2'));
+ releaseSecond();const releaseThird=await bounded(third);releaseThird();
+ const failed=createRestorationGate(3),failure=Error('active client failed'),waiting=failed.enter();
+ const rejected=assert.rejects(bounded(waiting),error=>error===failure);failed.fail(failure);await rejected;
+ await assert.rejects(bounded(failed.enter()),error=>error===failure,'A later arrival also rejects after an early failure');
+ assert.throws(()=>failed.check(),error=>error.cause===failure);
+ const restoring=createRestorationGate(3),firstRestore=restoring.enter(),queued=restoring.enter(),last=restoring.enter();
+ const release=await bounded(firstRestore),queuedRejected=assert.rejects(bounded(queued),error=>error.cause===failure),lastRejected=assert.rejects(bounded(last),error=>error.cause===failure);
+ restoring.fail(failure);release(failure);await Promise.all([queuedRejected,lastRejected]);
+ console.log('browser restoration self-check passed: all-client pause/save barrier, serial restore, early failure and queued failure release');
+}
+if(process.argv[2]==='--self-check'){await preparationSelfCheck();await restorationSelfCheck();process.exit(0);}
 
 const [output='output/browser-play',countArg='1',shardArg='0',epochArg='0',durationArg,scenario='youth',totalArg='25',densityArg='2']=process.argv.slice(2);
 const count=Number(countArg),shardId=Number(shardArg),startEpochMs=Number(epochArg),durationSeconds=Number(durationArg||(scenario==='soak'?'600':'60'));assert(['youth','career','soak'].includes(scenario));
@@ -53,7 +90,7 @@ const assetManifestPath='tests/fixtures/pro-soak-assets-20261030.json';
 const assetManifest=await fs.readFile(assetManifestPath,'utf8').then(JSON.parse).catch(error=>{if(error.code==='ENOENT'&&!(scenario==='soak'&&startEpochMs>0))return null;throw error;});
 if(assetManifest)assert.equal(assetManifest.origin,origin);
 const expectedAssets=assetManifest?Object.fromEntries(assetManifest.assets.map(asset=>[asset.path,asset.sha256])):null;
-const report={expectedAssets,sourceManifest,revision:process.env.GITHUB_SHA||null,platform:process.platform,runnerName:process.env.RUNNER_NAME||null,machineId:process.platform==='linux'?(await fs.readFile('/proc/sys/kernel/random/boot_id','utf8')).trim():os.hostname(),nodeVersion:process.version,origin,scenario,totalClients,clientsPerShard,count,shardId,startEpochMs,durationSeconds,startedAt:new Date().toISOString(),method:'Distinct temporary persistent profiles and Chromium processes. UI-only natural new games, choices and years. No state injection, fixtures, RNG changes or engine calls. Youth/career use visible pause and next-year controls; soak keeps default speed, automatic clock and animations, with per-VM serial initial preparation and pause before its coordinated barrier and after its active interval. Complete browser close and relaunch with same profile; resume and whole-save equality checked before further actions. External resources are unmodified.',clients:[]};
+const report={expectedAssets,sourceManifest,revision:process.env.GITHUB_SHA||null,platform:process.platform,runnerName:process.env.RUNNER_NAME||null,machineId:process.platform==='linux'?(await fs.readFile('/proc/sys/kernel/random/boot_id','utf8')).trim():os.hostname(),nodeVersion:process.version,origin,scenario,totalClients,clientsPerShard,count,shardId,startEpochMs,durationSeconds,startedAt:new Date().toISOString(),method:'Distinct temporary persistent profiles and Chromium processes. UI-only natural new games, choices and years. No state injection, fixtures, RNG changes or engine calls. Youth/career use visible pause and next-year controls; soak keeps default speed, automatic clock and animations, with per-VM serial initial preparation and pause before its coordinated barrier and after its active interval. Per-VM restoration begins only after all clients finish active play, pause and save; complete browser close and relaunch run serially with the same profiles. Resume and whole-save equality checked before further actions. External resources are unmodified.',clients:[]};
 const boundedCapacity=totalClients!==25||clientsPerShard!==2;
 const networkLimits={requests:Math.min(10000,boundedCapacity?count*512:10000),encodedBytes:Math.min(500e6,boundedCapacity?count*64*1024*1024:500e6),decodedBytes:Math.min(2e9,boundedCapacity?count*128*1024*1024:2e9)};
 report.networkLimits=networkLimits;
@@ -63,12 +100,14 @@ let networkBudgetFailure;
 const pendingBodies=[];
 const serialPreparation=scenario==='soak'&&startEpochMs>0;
 const enterPreparation=createPreparationGate();
+const restoration=createRestorationGate(count);
 report.preparationMode=serialPreparation?'serial-before-common-barrier':'parallel';
+report.restorationMode='serial-after-all-clients-paused-and-saved';
 async function client(index){
  const id=shardId*clientsPerShard+index,dir=path.join(output,`client-${id}`);await fs.mkdir(dir,{recursive:true});
  const result={id,startedAtMs:Date.now(),width:scenario==='career'?1440:id%2?1440:390,timings:{initial:{},relaunch:{}},samples:[],checkpoints:[],completedLives:0,status:'running',errors:[],actions:[],network:{requests:0,encodedBytes:0,decodedBytes:0,responses:[],external:[],bodyHashes:[]},choices:0,storyChoices:0,trainingChanges:0,years:0};report.clients.push(result);
- const profile=await fs.mkdtemp(path.join(os.tmpdir(),`football-play-${id}-`));let context,page,phase='initial',fatal,releasePreparation;
- const check=()=>{if(networkBudgetFailure)throw networkBudgetFailure;if(fatal)throw fatal;if(result.errors.length)throw Error(`Browser error: ${JSON.stringify(result.errors[0])}`);};
+ const profile=await fs.mkdtemp(path.join(os.tmpdir(),`football-play-${id}-`));let context,page,phase='initial',fatal,releasePreparation,releaseRestoration;
+ const check=()=>{restoration.check();if(networkBudgetFailure)throw networkBudgetFailure;if(fatal)throw fatal;if(result.errors.length)throw Error(`Browser error: ${JSON.stringify(result.errors[0])}`);};
  const fail=e=>{result.errors.push(e);fatal ||= Error(JSON.stringify(e));if(e.type.endsWith('-cap')){networkBudgetFailure ||= fatal;context?.close().catch(()=>{});}};
  const launch=async()=>{const started=performance.now();
   context=await chromium.launchPersistentContext(profile,{headless:true,viewport:{width:result.width,height:900},reducedMotion:scenario==='youth'?'reduce':'no-preference',...(process.env.PLAYWRIGHT_EXECUTABLE_PATH?{executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH}:{})});
@@ -143,13 +182,14 @@ async function client(index){
    }
   }
   result.activeEndMs=Date.now();await pause();await drain();assert.equal(await page.locator('#save-status').textContent(),'저장 완료');
+  const stopped=await read();assert(stopped.mode==='retired'||stopped.paused,'Client paused before restoration barrier');
   const before=await saved();result.saveBeforeSha256=sha(before);await fs.writeFile(path.join(dir,'save-before.json'),JSON.stringify(before,null,2));
-  await Promise.all(pendingBodies);check();await context.close();context=null;result.browserClosedAtMs=Date.now();phase='relaunch';await launch();result.browserRelaunchedAtMs=Date.now();await navigate();assert(await page.locator('#resume-btn').isVisible());const resumeStarted=performance.now();await page.locator('#resume-btn').click();await page.waitForFunction(()=>JSON.parse(window.render_game_to_text()).mode!=='intro');result.timings.relaunch.resumeMs=performance.now()-resumeStarted;
+  await Promise.all(pendingBodies);check();result.restorationReadyAtMs=Date.now();releaseRestoration=await restoration.enter();result.restorationStartedAtMs=Date.now();check();await context.close();context=null;result.browserClosedAtMs=Date.now();phase='relaunch';await launch();result.browserRelaunchedAtMs=Date.now();await navigate();assert(await page.locator('#resume-btn').isVisible());const resumeStarted=performance.now();await page.locator('#resume-btn').click();await page.waitForFunction(()=>JSON.parse(window.render_game_to_text()).mode!=='intro');result.timings.relaunch.resumeMs=performance.now()-resumeStarted;
   const after=await saved();assert.deepEqual(after,before,'Whole save survives complete browser process close/relaunch');result.saveAfterSha256=sha(after);result.savePreserved=true;result.relaunchMs=Date.now()-result.browserClosedAtMs;result.restored=await read();assert.equal(result.restored.age,before.age);assert.equal(result.restored.name,before.name);await shot('restored');await Promise.all(pendingBodies);check();result.status='passed';result.passed=true;
- }catch(e){releasePreparation?.(e);releasePreparation=null;result.status='failed';result.passed=false;result.failure=e.stack;try{await shot('failure');result.failureState=await read();}catch{} }
- finally{releasePreparation?.(Error('Browser preparation did not complete'));clearTimeout(timeout);if(context)await context.close().catch(()=>{});await Promise.all(pendingBodies);if(result.errors.length){result.status='failed';result.passed=false;result.failure ||= 'Network or browser error during cleanup';}result.finishedAtMs=Date.now();await fs.writeFile(path.join(dir,'report.json'),JSON.stringify(result,null,2));assert.equal(path.dirname(path.resolve(profile)),path.resolve(os.tmpdir()));assert(path.basename(profile).startsWith(`football-play-${id}-`));await fs.rm(profile,{recursive:true,force:true});}
+ }catch(e){restoration.fail(e);releasePreparation?.(e);releasePreparation=null;releaseRestoration?.(e);releaseRestoration=null;result.status='failed';result.passed=false;result.failure=e.stack;try{await shot('failure');result.failureState=await read();}catch{} }
+ finally{releasePreparation?.(Error('Browser preparation did not complete'));clearTimeout(timeout);if(context)await context.close().catch(()=>{});await Promise.all(pendingBodies);if(result.errors.length){result.status='failed';result.passed=false;result.failure ||= 'Network or browser error during cleanup';restoration.fail(Error(result.failure));}if(Number.isFinite(result.restorationStartedAtMs))result.restorationFinishedAtMs=Date.now();releaseRestoration?.(result.passed?undefined:Error(result.failure||'Browser restoration did not complete'));releaseRestoration=null;result.finishedAtMs=Date.now();await fs.writeFile(path.join(dir,'report.json'),JSON.stringify(result,null,2));assert.equal(path.dirname(path.resolve(profile)),path.resolve(os.tmpdir()));assert(path.basename(profile).startsWith(`football-play-${id}-`));await fs.rm(profile,{recursive:true,force:true});}
  return result;
 }
-await Promise.all(Array.from({length:count},(_,i)=>client(i)));
+await Promise.all(Array.from({length:count},(_,i)=>client(i).catch(error=>{restoration.fail(error);throw error;})));
 report.networkTotals=totals;report.finishedAt=new Date().toISOString();report.success=report.clients.every(c=>c.passed)&&new Set(report.clients.map(c=>c.initialSeed)).size===count&&new Set(report.clients.map(c=>c.initialSaveSha256)).size===count;report.passed=report.success;
 await fs.writeFile(path.join(output,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({success:report.success,output,clients:report.clients.map(c=>({id:c.id,status:c.status,age:c.progressed?.age,matchAppearances:c.matchAppearances,choices:c.choices,savePreserved:c.savePreserved,failure:c.failure,errors:c.errors}))}));if(!report.success)process.exitCode=1;
