@@ -127,7 +127,7 @@ async function client(index){
  }
  const read=()=>page.evaluate(()=>JSON.parse(window.render_game_to_text()));
  const saved=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('touchline.life.v2')));
- const {action,drain}=createPlaytestUi({page:{locator:(...args)=>page.locator(...args)},scenario,check,readState:read,actions:result.actions,onChoice:()=>result.choices++,onStoryChoice:()=>result.storyChoices++});
+ const {action,drain}=createPlaytestUi({page:{locator:(...args)=>page.locator(...args),addLocatorHandler:(...args)=>page.addLocatorHandler(...args),removeLocatorHandler:(...args)=>page.removeLocatorHandler(...args)},scenario,check,readState:read,actions:result.actions,onChoice:()=>result.choices++,onStoryChoice:()=>result.storyChoices++});
  async function shot(label){await page.screenshot({path:path.join(dir,`${label}.png`),fullPage:true});}
  async function pause(){const state=await read();if(state.mode!=='retired'&&!state.paused)await action('pause','#pause-btn');}
  async function navigate(){const started=performance.now();const response=await page.goto(origin+'/',{waitUntil:'domcontentloaded'});assert.equal(response.status(),200);await page.waitForFunction(()=>typeof window.render_game_to_text==='function'&&!document.querySelector('#start-btn').disabled);result.timings[phase].navigationToAppReadyMs=performance.now()-started;check();}

@@ -18,7 +18,7 @@ try{
  await assert.rejects(legacyDrain(),/Unknown dialog/);
  await page.locator('[data-choice]').click();
  let injectAfterSnapshot=true;
- const snapshotPage={locator(selector){const locator=page.locator(selector);if(selector!=='dialog[open]')return locator;return {async evaluateAll(fn){const ids=await locator.evaluateAll(fn);if(injectAfterSnapshot){injectAfterSnapshot=false;await page.evaluate(()=>document.querySelector('#decision-dialog').showModal());}return ids;}};}};
+ const snapshotPage={addLocatorHandler:(...args)=>page.addLocatorHandler(...args),removeLocatorHandler:(...args)=>page.removeLocatorHandler(...args),locator(selector){const locator=page.locator(selector);if(selector!=='dialog[open]')return locator;return {first:()=>locator.first(),async evaluateAll(fn){const ids=await locator.evaluateAll(fn);if(injectAfterSnapshot){injectAfterSnapshot=false;await page.evaluate(()=>document.querySelector('#decision-dialog').showModal());}return ids;}};}};
  const actions=[];let choices=0;
  const ui=createPlaytestUi({page:snapshotPage,scenario:'soak',actions,onChoice:()=>choices++});
  await ui.drain(); // Empty atomic snapshot stays valid despite the subsequent known dialog.
@@ -68,7 +68,7 @@ try{
  // A natural retirement can hide game controls after the loop sampled playing state.
  await page.evaluate(()=>{window.mode='playing';window.paused=false;document.querySelector('#pause-btn').hidden=false;document.querySelector('[data-training]').hidden=false;});
  let retireOnTrainingClick=true;
- const retiringPage={locator(selector){const locator=page.locator(selector);if(selector!=='[data-training]')return locator;return {first(){return {async click(options){
+ const retiringPage={addLocatorHandler:(...args)=>page.addLocatorHandler(...args),removeLocatorHandler:(...args)=>page.removeLocatorHandler(...args),locator(selector){const locator=page.locator(selector);if(selector!=='[data-training]')return locator;return {first(){return {async click(options){
   if(retireOnTrainingClick){retireOnTrainingClick=false;await page.evaluate(()=>{window.mode='retired';document.querySelector('[data-training]').hidden=true;});}
   return locator.first().click(options);
  }}}};}};
@@ -116,26 +116,86 @@ try{
  assert.equal(await slowPage.evaluate(()=>Number(sessionStorage.clicks)),1);
  assert(slowActions[1].endMs-slowActions[1].startMs>=1100,'Completed action timing includes navigation after the delivered click');
  assert(slowActions[1].endMs-slowActions[1].startMs<15000);
- // If a modal races after a successful trial, a failed real click must never be retried.
+ // A known modal racing after a successful trial must be drained before one real input dispatch.
  await slowPage.setContent(`<button id="target" onclick="window.clicks++">Target</button><dialog id="decision-dialog"><div id="decision-options"><button data-choice="practice" onclick="this.closest('dialog').close()">Practice</button></div></dialog><script>window.clicks=0</script>`);
- let realAttempts=0,interceptAfterTrial=true;
- const afterTrialPage={locator(selector){const locator=slowPage.locator(selector);if(selector!=='#target')return locator;return {first(){return {async click(options){
-  if(!options.trial){realAttempts++;if(interceptAfterTrial)await slowPage.evaluate(()=>document.querySelector('#decision-dialog').showModal());}
-  // Shorten this failure-only fixture's deadline; still exercise Playwright's real interception.
-  return locator.first().click(options.trial?options:{...options,timeout:100});
+ let realAttempts=0,interceptAfterTrial=true,realTimeout=1000,injectedDialog='decision-dialog',insideHandler=false,injectAfterHandlerSnapshot=false,handlerInvocations=0;
+ const afterTrialPage={addLocatorHandler:(locator,handler,options)=>slowPage.addLocatorHandler(locator,async()=>{insideHandler=true;handlerInvocations++;try{await handler();}finally{insideHandler=false;}},options),removeLocatorHandler:(...args)=>slowPage.removeLocatorHandler(...args),locator(selector){const locator=slowPage.locator(selector);if(selector==='dialog[open]')return {first:()=>locator.first(),async evaluateAll(fn){const ids=await locator.evaluateAll(fn);if(insideHandler&&!ids.length&&injectAfterHandlerSnapshot){injectAfterHandlerSnapshot=false;await slowPage.evaluate(()=>document.querySelector('#story-dialog').showModal());}return ids;}};if(selector!=='#target')return locator;return {first(){return {async click(options){
+  if(!options.trial){realAttempts++;if(interceptAfterTrial)await slowPage.evaluate(id=>document.getElementById(id).showModal(),injectedDialog);}
+  return locator.first().click(options.trial?options:{...options,timeout:Math.min(realTimeout,options.timeout)});
  }}}};}};
  const afterTrialActions=[];
  const afterTrialUi=createPlaytestUi({page:afterTrialPage,scenario:'soak',actions:afterTrialActions});
- await assert.rejects(afterTrialUi.action('training-review','#target'),error=>error.name==='TimeoutError'&&error.message.includes('intercepts pointer events'));
- assert.equal(realAttempts,1);assert.equal(await slowPage.evaluate(()=>window.clicks),0);
- assert.equal(afterTrialActions[0].endMs,undefined,'Failed dispatch is not successful-click evidence');
- await afterTrialUi.drain();
+ assert.equal(await afterTrialUi.action('training-review','#target'),true);
+ assert.equal(realAttempts,1);assert.equal(await slowPage.evaluate(()=>window.clicks),1);
+ assert(Number.isFinite(afterTrialActions[0].endMs));
  // A delivered action that opens a known dialog before timing out is equally unsafe to repeat.
- interceptAfterTrial=false;realAttempts=0;
+ interceptAfterTrial=false;realAttempts=0;realTimeout=100;
  await slowPage.evaluate(()=>{window.clicks=0;document.querySelector('#target').onclick=()=>{window.clicks++;document.querySelector('#decision-dialog').showModal();const end=performance.now()+350;while(performance.now()<end){}};});
  await assert.rejects(afterTrialUi.action('training-review','#target'),error=>error.name==='TimeoutError');
  assert.equal(await slowPage.evaluate(()=>window.clicks),1);assert.equal(realAttempts,1);
  assert.equal(afterTrialActions.findLast(action=>action.label==='training-review').endMs,undefined,'Late observed effect cannot turn a timed-out dispatch into a completed action');
+ await assert.rejects(slowPage.locator('#target').click({trial:true,timeout:100}),error=>error.name==='TimeoutError');
+ assert.equal(await slowPage.locator('#decision-dialog[open]').count(),1,'Failed action must remove its native handler');
  await afterTrialUi.drain();
- console.log('playtest UI local regression passed: existing modal/retirement cases; real 750ms handler/navigation false failures; single dispatch with honest completion timings; post-trial modal failure without retry');
+ // Unknown late overlays fail through the handler without dispatch or an unhandled callback rejection.
+ await slowPage.evaluate(()=>{window.clicks=0;document.querySelector('#target').onclick=()=>window.clicks++;document.body.insertAdjacentHTML('beforeend','<dialog id="unexpected-dialog">Unknown</dialog>');});
+ interceptAfterTrial=true;injectedDialog='unexpected-dialog';realTimeout=1000;realAttempts=0;
+ await assert.rejects(afterTrialUi.action('training-review','#target'),/Unknown dialog: unexpected-dialog/);
+ assert.equal(realAttempts,1);assert.equal(await slowPage.evaluate(()=>window.clicks),0);
+ await assert.rejects(slowPage.locator('#target').click({trial:true,timeout:100}),error=>error.name==='TimeoutError');
+ await slowPage.evaluate(()=>document.querySelector('#unexpected-dialog').close());
+ // Native cancellation must actually stop the pending click, including when its target later becomes visible.
+ await slowPage.evaluate(()=>{document.querySelector('#target').hidden=true;});
+ const abort=new AbortController(),abortStarted=Date.now();
+ const aborted=slowPage.locator('#target').click({timeout:15000,signal:abort.signal});
+ setTimeout(()=>abort.abort(),50);
+ await assert.rejects(aborted,error=>error.name==='AbortError');assert(Date.now()-abortStarted<1000);
+ await slowPage.evaluate(()=>document.querySelector('#target').hidden=false);await slowPage.waitForTimeout(150);
+ assert.equal(await slowPage.evaluate(()=>window.clicks),0,'Aborted click must not dispatch after the target becomes visible');
+ // A native handler may retire the game or pause it; abort before the original input can toggle state.
+ injectedDialog='decision-dialog';
+ const stoppedActions=[];
+ const stoppedUi=createPlaytestUi({page:afterTrialPage,scenario:'soak',actions:stoppedActions,readState:()=>slowPage.evaluate(()=>({mode:window.mode,paused:window.paused}))});
+ for(const reason of ['retired','already-paused']){
+  realAttempts=0;
+  await slowPage.evaluate(reason=>{
+   window.mode='playing';window.paused=false;window.clicks=0;document.querySelector('#target').hidden=false;
+   document.querySelector('#target').onclick=()=>{window.clicks++;window.paused=!window.paused;};
+   document.querySelector('[data-choice]').onclick=function(){this.closest('dialog').close();if(reason==='retired'){window.mode='retired';document.querySelector('#target').hidden=true;}else window.paused=true;};
+  },reason);
+  assert.equal(await stoppedUi.action('pause','#target'),undefined);
+  assert.equal(realAttempts,1);assert.equal(await slowPage.evaluate(()=>window.clicks),0);
+  assert.equal(stoppedActions.findLast(action=>action.label==='pause').skippedReason,reason);
+  assert.equal(stoppedActions.findLast(action=>action.label==='pause').endMs,undefined);
+  await slowPage.evaluate(()=>document.querySelector('#target').hidden=false);await slowPage.waitForTimeout(150);
+  assert.equal(await slowPage.evaluate(()=>window.clicks),0,'Stopped original click must stay cancelled after modal handling');
+ }
+ // Chained known dialogs drain inside the same native handler without reentrancy or extra primary input.
+ await slowPage.evaluate(()=>{
+  window.mode='playing';window.paused=false;window.clicks=0;window.chain=[];
+  document.querySelector('#target').onclick=()=>window.clicks++;
+  document.body.insertAdjacentHTML('beforeend','<dialog id="result-dialog"><button id="result-confirm">Result</button></dialog><dialog id="story-dialog"><button data-story-choice>Story</button></dialog><dialog id="cutscene-dialog">Cutscene</dialog>');
+  document.querySelector('#result-confirm').onclick=function(){window.chain.push('result');this.closest('dialog').close();document.querySelector('#story-dialog').showModal();};
+  document.querySelector('[data-story-choice]').onclick=function(){window.chain.push('story');this.closest('dialog').close();document.querySelector('#decision-dialog').showModal();};
+  document.querySelector('[data-choice]').onclick=function(){window.chain.push('decision');this.closest('dialog').close();};
+ });
+ injectedDialog='result-dialog';realAttempts=0;
+ assert.equal(await afterTrialUi.action('training-review','#target'),true);
+ assert.equal(realAttempts,1);assert.equal(await slowPage.evaluate(()=>window.clicks),1);
+ assert.deepEqual(await slowPage.evaluate(()=>window.chain),['result','story','decision']);
+ // A new dialog can appear between the handler's empty snapshot and native post-handler waiting.
+ injectAfterHandlerSnapshot=true;realAttempts=0;handlerInvocations=0;
+ await slowPage.evaluate(()=>{window.clicks=0;window.chain=[];});
+ assert.equal(await afterTrialUi.action('training-review','#target'),true);
+ assert.equal(realAttempts,1);assert.equal(handlerInvocations,2);assert.equal(await slowPage.evaluate(()=>window.clicks),1);
+ assert.deepEqual(await slowPage.evaluate(()=>window.chain),['result','story','decision','story','decision']);
+ // Handler cutscene waiting must share the remaining action deadline, never start its old 30-second wait.
+ injectedDialog='cutscene-dialog';realAttempts=0;
+ const boundedStarted=Date.now();
+ await assert.rejects(afterTrialUi.action('training-review','#target',{deadline:boundedStarted+600}),error=>error.name==='TimeoutError'||/deadline/.test(error.message));
+ assert(Date.now()-boundedStarted<1200,'Modal draining stays inside the inherited action budget');
+ assert.equal(realAttempts,1);assert.equal(await slowPage.evaluate(()=>window.clicks),1);
+ await slowPage.evaluate(()=>document.querySelector('#cutscene-dialog').close());await slowPage.waitForTimeout(150);
+ assert.equal(await slowPage.evaluate(()=>window.clicks),1,'Timed-out handler must not leave pending input');
+ console.log('playtest UI local regression passed: existing modal/retirement cases; real 750ms handler/navigation false failures; post-trial modal recovery with one click; delivered-timeout no retry; unknown overlay failure; native cancellation and handler cleanup; post-handler retirement/already-paused skip; chained dialogs, post-handler modal gap and shared handler deadline');
 }finally{await browser.close();}
