@@ -39,3 +39,15 @@ node tests/load-monitor.mjs --self-check
 ```
 
 Playwright와 로컬 Chromium을 별도로 준비한 환경에서는 `node tests/playtest-ui-regression.mjs`로 로컬 HTML 기반 UI 회귀 검사를 실행합니다. 해당 회귀 검사는 운영 URL을 열지 않습니다.
+
+
+## 실행 결과 — 2026-10-30
+
+[run 41015265955](https://github.com/LightMinChoi/football-life-browser-capacity/actions/runs/41015265955), 소스 `b59cd16622bdd257e03d359f435c3198a3d2e636`의 실제 하드웨어는 4 vCPU·총 RAM 16,760,344,576바이트였습니다. 하드웨어 검사는 통과했으나 **10명 pilot은 FAIL**입니다. 8명은 기능·저장 복원을 마쳤고 2명은 750ms UI 동작 timeout으로 실패했습니다.
+
+10명 표본 공통 구간은 609,038ms, 완전히 포함된 원시 CPU 607개 구간의 tick 가중 평균은 70.7740719%였습니다. 같은 607개 구간의 표본 평균은 70.6798862%이며 tick 가중 평균과 집계 방식이 다릅니다. 게임 진행 중 CPU 90% 초과가 최대 13개 연속 표본으로 나타나 기존 CPU 기준도 실패했습니다. 최소 가용 RAM은 11,876,343,808바이트였습니다. 시나리오 실패로 정식 pilot 집계 단계는 SKIPPED이며 원래 FAIL 판정을 유지합니다. 독립 감사에서도 공개 소스 pin·자산 SHA·8명의 전체 저장 복원·원시 CPU 지표를 확인했고 전체 FAIL을 유지했습니다.
+
+10명 pilot을 통과하지 못했으므로 `cohort-200`은 실행하지 않았고 추가 재시도도 하지 않았습니다. 200명 자연 플레이와 서비스 최대 수용 인원은 미검증입니다. CPU 포화만으로 각 UI timeout의 개별 원인을 단정하지 않습니다.
+
+
+GitHub 사용량 API에서 이번 표준 러너의 과금 대상 실행 시간은 0ms로 표시됐습니다.
